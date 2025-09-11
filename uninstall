@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+#
+# Uninstall script - removes generated files and restores backups
+
+DOTFILES_ROOT="`pwd`"
+PLUGINS_DIR="$DOTFILES_ROOT/plugins"
+GENERATED_DIR="$DOTFILES_ROOT/generated"
+
+set -e
+
+echo ''
+
+info () {
+  printf "  [ \033[00;34m..\033[0m ] $1"
+}
+
+user () {
+  printf "\r  [ \033[0;33m?\033[0m ] $1 "
+}
+
+success () {
+  printf "\r\033[2K  [ \033[00;32mOK\033[0m ] $1\n"
+}
+
+fail () {
+  printf "\r\033[2K  [\033[0;31mFAIL\033[0m] $1\n"
+  echo ''
+  exit
+}
+
+restore_backup () {
+  local backup_file="$1"
+  local original_file="${backup_file%.backup}"
+  
+  if [ -f "$backup_file" ]; then
+    if [ -f "$original_file" ]; then
+      rm "$original_file"
+    fi
+    mv "$backup_file" "$original_file"
+    success "restored $original_file from backup"
+  fi
+}
+
+# First remove generated symlinks
+info 'Removing generated symlinks\n'
+
+for config_file in "$GENERATED_DIR"/*; do
+  if [ -f "$config_file" ]; then
+    filename="$(basename "$config_file")"
+    dest="$HOME/.$filename"
+    
+    if [ -L "$dest" ]; then
+      rm "$dest"
+      success "removed symlink $dest"
+    fi
+  fi
+done
+
+# Remove generated files
+info 'Removing generated files\n'
+rm -rf "$GENERATED_DIR"
+success "removed generated files"
+
+# Process plugins in reverse order (non-base plugins first, then base)
+info 'Processing plugins\n'
+
+# First non-base plugins
+for plugin_dir in "$PLUGINS_DIR"/*; do
+  if [ "$plugin_dir" != "$PLUGINS_DIR/base" ] && [ -d "$plugin_dir" ]; then
+    plugin_name="$(basename "$plugin_dir")"
+    info "Processing plugin: $plugin_name\n"
+    
+    # Remove symlinks and restore backups
+    for source in $(find "$plugin_dir" -maxdepth 2 -name \*.symlink); do
+      filename="$(basename "${source%.*}")"
+      dest="$HOME/.$filename"
+      backup="$dest.backup"
+      
+      # Skip bash-related files as they're handled separately
+      if [[ "$filename" == "bashrc" ]] || [[ "$filename" == "bash_aliases" ]] || [[ "$filename" == "bash_profile" ]]; then
+        continue
+      fi
+      
+      if [ -L "$dest" ]; then
+        rm "$dest"
+        success "removed symlink $dest"
+      fi
+      
+      restore_backup "$backup"
+    done
+  fi
+done
+
+# Then base plugin
+if [ -d "$PLUGINS_DIR/base" ]; then
+  info "Processing base plugin\n"
+  
+  # Remove symlinks and restore backups
+  for source in $(find "$PLUGINS_DIR/base" -maxdepth 2 -name \*.symlink); do
+    filename="$(basename "${source%.*}")"
+    dest="$HOME/.$filename"
+    backup="$dest.backup"
+    
+    # Skip bash-related files as they're handled separately
+    if [[ "$filename" == "bashrc" ]] || [[ "$filename" == "bash_aliases" ]] || [[ "$filename" == "bash_profile" ]]; then
+      continue
+    fi
+    
+    if [ -L "$dest" ]; then
+      rm "$dest"
+      success "removed symlink $dest"
+    fi
+    
+    restore_backup "$backup"
+  done
+fi
+
+# Restore bash-related backups
+for file in bashrc bash_aliases bash_profile; do
+  restore_backup "$HOME/.$file.backup"
+done
+
+echo ''
+echo '  All uninstalled!'
+echo '' 

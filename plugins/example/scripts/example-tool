@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+#
+# Example tool script
+
+set -e
+
+# Help message
+show_help() {
+    echo "Usage: example-tool [options] <command>"
+    echo ""
+    echo "Commands:"
+    echo "  start     Start the example service"
+    echo "  stop      Stop the example service"
+    echo "  status    Show example service status"
+    echo ""
+    echo "Options:"
+    echo "  -h, --help    Show this help message"
+    echo "  -c, --config  Use custom config file"
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -c|--config)
+            CONFIG_FILE="$2"
+            shift 2
+            ;;
+        *)
+            COMMAND="$1"
+            shift
+            ;;
+    esac
+done
+
+# Execute command
+case "$COMMAND" in
+    start)
+        # echo "Starting example service..."
+        echo "Example: implement your start logic here"
+        ;;
+    stop)
+        # echo "Stopping example service..."
+        echo "Example: implement your stop logic here"
+        ;;
+    status)
+        # echo "Checking example service status..."
+        echo "Example: implement your status check logic here"
+        ;;
+    *)
+        show_help
+        exit 1
+        ;;
+esac 

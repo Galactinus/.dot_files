@@ -1,0 +1,19 @@
+# Example Plugin - bashrc configurations
+# This file will be sourced by the main ~/.bashrc
+
+# Example environment variables
+# export EXAMPLE_PATH="/usr/local/example"
+# export EXAMPLE_CONFIG="$HOME/.config/example"
+
+# Example PATH additions
+# PATH="$EXAMPLE_PATH/bin:$PATH"
+
+# Example function definitions
+# example_function() {
+#     echo "This is an example function"
+# }
+
+# Load other configurations if they exist
+# if [ -f "$EXAMPLE_CONFIG/settings" ]; then
+#     source "$EXAMPLE_CONFIG/settings"
+# fi 

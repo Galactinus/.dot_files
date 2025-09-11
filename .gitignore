@@ -1,0 +1,19 @@
+# Generated files
+/generated/
+*.generated
+
+# Plugin directory - ignore everything except base
+/plugins/*
+!/plugins/base/
+!/plugins/example/
+
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db 

@@ -1,0 +1,89 @@
+#set -x
+export EDITOR="vim"
+export MANPATH="/usr/share/man:/usr/local/share/man"
+
+#activate vim-7.3
+# activate gcc-4.1.2
+# activate foss
+
+
+##############################################################################
+# Path / Programs
+##############################################################################
+
+# CMake
+export CMAKE_EXPORT_COMPILE_COMMANDS=1
+# export PROMPT_COMMAND="echo -n \[\$(date +%H:%M:%S)\]\ "
+
+
+
+
+
+
+
+# Add our own bin
+export PATH="$HOME/.dot_files/bin:$HOME/bin:$PATH"
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Note: Force GTest to output colors (so they show up when redirected through tmux)
+export GTEST_COLOR="yes"
+
+
+##############################################################################
+# Other environment variables
+##############################################################################
+
+# This fixes the funny characters in the man pages (it forces them to
+# be displayed properly as ascii txt)
+if [ "$OS_SYS" == "Linux" ]; then
+  export LANG="C"
+fi
+
+
+
+
+### history ###
+export HISTCONTROL="ignoredups"
+
+
+### less ###
+# Set default options to be used with 'less'
+#
+# e -
+# i -
+# R - Causes ANSI "color" escape sequences to be output in "raw" form
+#     Without this option, colored output in less looks ugly :)
+#     option 'r' is similar, but it causes display problems (escape sequence
+#     characters are assumed to move the cursor, so less would start out as if
+#     it were scrolled down a few lines. Also, splitting long lines is
+#     sometimes incorrect).
+# M - Long prompt - prompt more verbosely than 'more'
+# X - Disables sending the termcap intialization and deinitialization strings
+#     to the terminal. Not sure exactly why this is needed...
+export LESS='-eiRMX'
+
+
+
+### Terminal Color Settings ###
+# note: xterm-256color is especially useful for vim colorschemes
+export TERM="xterm-256color"
+
+
+### pager ###
+export PAGER="less"
+
+
+### Gnu Global tags ###
+export MAKEOBJDIRPREFIX="$HOME/global/tags"
+

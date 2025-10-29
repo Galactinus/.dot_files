@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+#
+# Recursively updates all git submodules to match their branch states
+
+set -e
+
+echo "Updating main repository..."
+git pull
+
+echo -e "\nUpdating submodules to latest state..."
+git submodule update --init --recursive
+
+echo -e "\nChecking each submodule for updates..."
+git submodule foreach --recursive '
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    if [ "$branch" = "HEAD" ]; then
+        echo "Skipping detached HEAD in $name"
+    else
+        echo "Updating $name on branch $branch"
+        git pull origin $branch
+    fi
+'
+
+echo -e "\nAll repositories updated!" 

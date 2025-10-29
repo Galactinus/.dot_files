@@ -203,37 +203,40 @@ generate_bash_config () {
     case "$config_type" in
       "bashrc")
         # Source Git completion and prompt scripts first
-        if [ -f "$PLUGINS_DIR/base/git/git-completion.bash" ]; then
-          echo "# Source Git completion" >> "$main_file"
-          echo "if [ -f \"$PLUGINS_DIR/base/git/git-completion.bash\" ]; then" >> "$main_file"
-          echo "    source \"$PLUGINS_DIR/base/git/git-completion.bash\"" >> "$main_file"
+        new_file="$PLUGINS_DIR/base/git/git-completion.bash"
+        if [ -f "$new_file" ]; then
+          echo "# Source Git completion: $new_file" >> "$main_file"
+          echo "if [ -f \"$new_file\" ]; then" >> "$main_file"
+          echo "    source \"$new_file\"" >> "$main_file"
           echo "fi" >> "$main_file"
           echo "" >> "$main_file"
         fi
-        
-        if [ -f "$PLUGINS_DIR/base/git/git-prompt.bash" ]; then
-          echo "# Source Git prompt" >> "$main_file"
-          echo "if [ -f \"$PLUGINS_DIR/base/git/git-prompt.bash\" ]; then" >> "$main_file"
-          echo "    source \"$PLUGINS_DIR/base/git/git-prompt.bash\"" >> "$main_file"
+        # Source Git prompt if it exists
+        new_file="$PLUGINS_DIR/base/git/git-prompt.bash"
+        if [ -f "$new_file" ]; then
+          echo "# Source Git prompt: $new_file" >> "$main_file"
+          echo "if [ -f \"$new_file\" ]; then" >> "$main_file"
+          echo "    source \"$new_file\"" >> "$main_file"
           echo "fi" >> "$main_file"
           echo "" >> "$main_file"
         fi
-        
         # Source bashenv if it exists
-        if [ -f "$PLUGINS_DIR/base/bashenv" ]; then
-          echo "# Source base environment configuration" >> "$main_file"
-          echo "if [ -f \"$PLUGINS_DIR/base/bashenv\" ]; then" >> "$main_file"
-          echo "    source \"$PLUGINS_DIR/base/bashenv\"" >> "$main_file"
+        new_file="$PLUGINS_DIR/base/bashenv"
+        if [ -f "$new_file" ]; then
+          echo "# Source base environment configuration: $new_file" >> "$main_file"
+          echo "if [ -f \"$new_file\" ]; then" >> "$main_file"
+          echo "    source \"$new_file\"" >> "$main_file"
           echo "fi" >> "$main_file"
           echo "" >> "$main_file"
         fi
         ;;
       "bash_aliases")
         # Source alias.bash if it exists
-        if [ -f "$PLUGINS_DIR/base/bash/alias.bash" ]; then
-          echo "# Source base aliases" >> "$main_file"
-          echo "if [ -f \"$PLUGINS_DIR/base/bash/alias.bash\" ]; then" >> "$main_file"
-          echo "    source \"$PLUGINS_DIR/base/bash/alias.bash\"" >> "$main_file"
+        new_file="$PLUGINS_DIR/base/bash/alias.bash"
+        if [ -f "$new_file" ]; then
+          echo "# Source base aliases: $new_file" >> "$main_file"
+          echo "if [ -f \"$new_file\" ]; then" >> "$main_file"
+          echo "    source \"$new_file\"" >> "$main_file"
           echo "fi" >> "$main_file"
           echo "" >> "$main_file"
         fi
@@ -243,7 +246,7 @@ generate_bash_config () {
     # Source any .symlink files
     for source in $(find "$PLUGINS_DIR/base" -maxdepth 2 -name "$config_type.symlink"); do
       if [ -f "$source" ]; then
-        echo "# Source base plugin configuration" >> "$main_file"
+        echo "# Source base plugin configuration: $source" >> "$main_file"
         echo "if [ -f \"$source\" ]; then" >> "$main_file"
         echo "    source \"$source\"" >> "$main_file"
         echo "fi" >> "$main_file"
@@ -266,10 +269,11 @@ generate_bash_config () {
       case "$config_type" in
         "bash_aliases")
           # Look for alias.bash in plugin
-          if [ -f "$plugin_dir/bash/alias.bash" ]; then
-            echo "# Source $plugin_name aliases" >> "$main_file"
-            echo "if [ -f \"$plugin_dir/bash/alias.bash\" ]; then" >> "$main_file"
-            echo "    source \"$plugin_dir/bash/alias.bash\"" >> "$main_file"
+          new_file="$plugin_dir/bash/alias.bash"
+          if [ -f "$new_file" ]; then
+            echo "# Source $plugin_name aliases: $new_file" >> "$main_file"
+            echo "if [ -f \"$new_file\" ]; then" >> "$main_file"
+            echo "    source \"$new_file\"" >> "$main_file"
             echo "fi" >> "$main_file"
             echo "" >> "$main_file"
           fi
@@ -279,7 +283,7 @@ generate_bash_config () {
       # Source any .symlink files
       for source in $(find "$plugin_dir" -maxdepth 2 -name "$config_type.symlink"); do
         if [ -f "$source" ]; then
-          echo "# Source $plugin_name plugin configuration" >> "$main_file"
+          echo "# Source $plugin_name plugin configuration: $source" >> "$main_file"
           echo "if [ -f \"$source\" ]; then" >> "$main_file"
           echo "    source \"$source\"" >> "$main_file"
           echo "fi" >> "$main_file"
@@ -291,10 +295,11 @@ generate_bash_config () {
 
   # Finally, source the prompt configuration last (for bashrc only)
   if [ "$config_type" = "bashrc" ] && ! is_plugin_disabled "base"; then
-    if [ -f "$PLUGINS_DIR/base/prompt.bash" ]; then
-      echo "# Source prompt configuration (last to override any other prompt settings)" >> "$main_file"
-      echo "if [ -f \"$PLUGINS_DIR/base/prompt.bash\" ]; then" >> "$main_file"
-      echo "    source \"$PLUGINS_DIR/base/prompt.bash\"" >> "$main_file"
+    new_file="$PLUGINS_DIR/base/prompt.bash"
+    if [ -f "$new_file" ]; then
+      echo "# Source prompt configuration (last to override any other prompt settings): $new_file" >> "$main_file"
+      echo "if [ -f \"$new_file\" ]; then" >> "$main_file"
+      echo "    source \"$new_file\"" >> "$main_file"
       echo "fi" >> "$main_file"
       echo "" >> "$main_file"
     fi

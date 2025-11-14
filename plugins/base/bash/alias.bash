@@ -27,7 +27,7 @@ alias ..9='cd ../../../../../../../../..'
 alias ..10='cd ../../../../../../../../../..'
 
 LS_OPTIONS="--color=auto -F" #remove
-alias ll='ls --lA'
+alias ll='ls -al'
 
 ##grep
 alias grep='grep --color=auto'

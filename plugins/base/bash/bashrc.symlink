@@ -115,3 +115,19 @@ if ! shopt -oq posix; then
     . /etc/bash_completion
   fi
 fi
+
+# write project directory for vscode terminal sessions to PROJ_ROOT env var
+if [[ "$TERM_PROGRAM" == "vscode" && -z "${PROJ_ROOT+x}" ]]; then
+  export PROJ_ROOT="$PWD"
+fi
+
+
+#function for above variable
+cdr() {
+    if [[ -z "${PROJ_ROOT:-}" ]]; then
+        printf "PROJ_ROOT is not set\n"
+        return 1
+    else
+        cd -- "$PROJ_ROOT" || return
+    fi
+}

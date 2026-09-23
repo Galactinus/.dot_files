@@ -1,0 +1,18 @@
+#! /bin/bash
+
+git=$(which git)
+
+if [ $# -ne 1 ]
+then
+    echo "Please only include branch name"
+else
+    echo "Creating and tracking branch $1"
+    if [ "${git branch | grep $1 | wc -l}" -eq 0 ]
+    then
+        git checkout -b "$1"
+        git push --set-upstream origin "$1"
+    else
+        echo "Branch $1 already exists"
+        git checkout "$1"
+    fi
+fi

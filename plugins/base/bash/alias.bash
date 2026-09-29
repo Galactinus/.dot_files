@@ -32,7 +32,7 @@ alias ll='ls -al'
 ##grep
 alias grep='grep --color=auto'
 alias fgrep='fgrep --color=auto'
-alias egrep='egrep --color=auto'
+alias egrep='grep -E --color=auto'
 
 #ssh 
 alias ssh='ssh -o StrictHostKeyChecking=no'

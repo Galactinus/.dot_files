@@ -161,3 +161,42 @@ paths() {
     fi
     source "$paths_script" "$@"
 }
+
+_paths_completion() {
+    local cur command state_file active_file entry
+    cur="${COMP_WORDS[COMP_CWORD]}"
+
+    if (( COMP_CWORD == 1 )); then
+        COMPREPLY=( $(compgen -W 'set_file add del delete run help' -- "$cur") )
+        return 0
+    fi
+
+    command="${COMP_WORDS[1]}"
+    case "$command" in
+        set_file)
+            mapfile -t COMPREPLY < <(compgen -f -- "$cur")
+            ;;
+        add)
+            mapfile -t COMPREPLY < <(compgen -d -- "$cur")
+            ;;
+        del|delete)
+            state_file="${PATHS_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/paths/active_file}"
+            if [[ -r "$state_file" ]]; then
+                IFS= read -r active_file < "$state_file"
+                if [[ -r "${active_file:-}" ]]; then
+                    while IFS= read -r entry || [[ -n "$entry" ]]; do
+                        [[ "$entry" == "$cur"* ]] && COMPREPLY+=("$entry")
+                    done < "$active_file"
+                fi
+            fi
+            ;;
+        run)
+            if (( COMP_CWORD == 2 )); then
+                COMPREPLY=( $(compgen -c -- "$cur") )
+            else
+                compopt -o default
+            fi
+            ;;
+    esac
+}
+complete -F _paths_completion paths

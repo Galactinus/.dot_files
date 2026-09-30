@@ -44,7 +44,7 @@ omitted); `cdr` returns to that root.
 
 `paths` keeps a persistent active file of directories. Choose or create the
 file with `paths set_file ~/my-paths`, then add or remove directories with
-`paths add [directory]` and `paths del [directory]`. Paths are stored as
+`paths add [directory ...]` and `paths del [directory ...]`. Paths are stored as
 absolute paths, one per line. Run a command in each listed directory with, for
 example, `paths run git status` or `paths run 'git status && git diff --stat'`.
 Each directory is announced in purple before its command runs. In an installed

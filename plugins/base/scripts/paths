@@ -9,13 +9,14 @@ paths_usage() {
     cat <<'EOF'
 Usage:
   paths set_file <list-file>
-  paths add [directory]
-  paths del [directory]
-  paths delete [directory]
+  paths add [directory ...]
+  paths del [directory ...]
+  paths delete [directory ...]
   paths run <command> [arguments ...]
 
 The active list file contains one absolute directory path per line.  `add`
-and `del` use the current directory when directory is omitted.  For compound
+and `del` use the current directory when directory is omitted. Both accept
+multiple directories, including shell glob expansions. For compound
 shell commands, quote the command so it is evaluated separately in every
 directory, for example: paths run 'git status && git diff --stat'.
 EOF
@@ -74,50 +75,77 @@ paths_set_file() {
 }
 
 paths_add() {
-    if [[ $# -gt 1 ]]; then
-        printf 'Usage: paths add [directory]\n' >&2
-        return 2
-    fi
     paths_active_file || return
-    paths_directory "${1:-}" || return
 
-    if grep -Fqx -- "$PATHS_DIRECTORY" "$PATHS_ACTIVE_FILE"; then
-        printf 'paths: already listed: %s\n' "$PATHS_DIRECTORY"
-        return 0
+    if [[ $# -eq 0 ]]; then
+        set -- "$PWD"
     fi
 
-    printf '%s\n' "$PATHS_DIRECTORY" >> "$PATHS_ACTIVE_FILE"
-    printf 'paths: added: %s\n' "$PATHS_DIRECTORY"
+    local requested status=0
+    for requested in "$@"; do
+        if ! PATHS_DIRECTORY="$(cd -- "$requested" 2>/dev/null && pwd -P)"; then
+            printf '\033[0;31mPATHS: did not add %s: not a directory\033[0m\n' "$requested" >&2
+            status=1
+            continue
+        fi
+
+        if grep -Fqx -- "$PATHS_DIRECTORY" "$PATHS_ACTIVE_FILE"; then
+            printf '\033[0;31mPATHS: did not add %s: already added\033[0m\n' "$PATHS_DIRECTORY" >&2
+            status=1
+            continue
+        fi
+
+        if ! printf '%s\n' "$PATHS_DIRECTORY" >> "$PATHS_ACTIVE_FILE"; then
+            printf '\033[0;31mPATHS: did not add %s: cannot write to active list file\033[0m\n' "$PATHS_DIRECTORY" >&2
+            status=1
+            continue
+        fi
+        printf '\033[0;32mPATHS: added %s\033[0m\n' "$PATHS_DIRECTORY"
+    done
+    return "$status"
 }
 
 paths_del() {
-    if [[ $# -gt 1 ]]; then
-        printf 'Usage: paths del [directory]\n' >&2
-        return 2
-    fi
     paths_active_file || return
-    paths_directory "${1:-}" || return
 
-    local temporary removed=1 entry
-    temporary="$(mktemp "${PATHS_ACTIVE_FILE}.tmp.XXXXXX")" || return 1
-    while IFS= read -r entry || [[ -n "$entry" ]]; do
-        if [[ "$entry" == "$PATHS_DIRECTORY" ]]; then
-            removed=0
-        else
-            printf '%s\n' "$entry" >> "$temporary"
+    if [[ $# -eq 0 ]]; then
+        set -- "$PWD"
+    fi
+
+    local requested temporary removed entry status=0
+    for requested in "$@"; do
+        if ! PATHS_DIRECTORY="$(cd -- "$requested" 2>/dev/null && pwd -P)"; then
+            printf '\033[0;31mPATHS: did not delete %s: not a directory\033[0m\n' "$requested" >&2
+            status=1
+            continue
         fi
-    done < "$PATHS_ACTIVE_FILE"
 
-    if ! mv -- "$temporary" "$PATHS_ACTIVE_FILE"; then
-        rm -f -- "$temporary"
-        return 1
-    fi
+        temporary="$(mktemp "${PATHS_ACTIVE_FILE}.tmp.XXXXXX")" || {
+            printf '\033[0;31mPATHS: did not delete %s: cannot update active list file\033[0m\n' "$PATHS_DIRECTORY" >&2
+            status=1
+            continue
+        }
+        removed=1
+        while IFS= read -r entry || [[ -n "$entry" ]]; do
+            if [[ "$entry" == "$PATHS_DIRECTORY" ]]; then
+                removed=0
+            else
+                printf '%s\n' "$entry" >> "$temporary"
+            fi
+        done < "$PATHS_ACTIVE_FILE"
 
-    if (( removed == 0 )); then
-        printf 'paths: removed: %s\n' "$PATHS_DIRECTORY"
-    else
-        printf 'paths: not listed: %s\n' "$PATHS_DIRECTORY"
-    fi
+        if ! mv -- "$temporary" "$PATHS_ACTIVE_FILE"; then
+            rm -f -- "$temporary"
+            printf '\033[0;31mPATHS: did not delete %s: cannot update active list file\033[0m\n' "$PATHS_DIRECTORY" >&2
+            status=1
+        elif (( removed == 0 )); then
+            printf '\033[0;32mPATHS: deleted %s\033[0m\n' "$PATHS_DIRECTORY"
+        else
+            printf '\033[0;31mPATHS: did not delete %s: not in active list\033[0m\n' "$PATHS_DIRECTORY" >&2
+            status=1
+        fi
+    done
+    return "$status"
 }
 
 paths_run() {

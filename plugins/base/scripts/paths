@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# Maintain a named list of directories and run a shell command in each one.
+
+paths_state_file() {
+    printf '%s\n' "${PATHS_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/paths/active_file}"
+}
+
+paths_usage() {
+    cat <<'EOF'
+Usage:
+  paths set_file <list-file>
+  paths add [directory]
+  paths del [directory]
+  paths delete [directory]
+  paths run <command> [arguments ...]
+
+The active list file contains one absolute directory path per line.  `add`
+and `del` use the current directory when directory is omitted.  For compound
+shell commands, quote the command so it is evaluated separately in every
+directory, for example: paths run 'git status && git diff --stat'.
+EOF
+}
+
+paths_active_file() {
+    local state_file
+    state_file="$(paths_state_file)"
+
+    if [[ ! -r "$state_file" ]]; then
+        printf 'paths: no active list file; run paths set_file <list-file> first\n' >&2
+        return 1
+    fi
+
+    IFS= read -r PATHS_ACTIVE_FILE < "$state_file"
+    if [[ -z "${PATHS_ACTIVE_FILE:-}" ]]; then
+        printf 'paths: active list file is empty; run paths set_file <list-file>\n' >&2
+        return 1
+    fi
+}
+
+paths_directory() {
+    local requested="${1:-$PWD}"
+    if ! PATHS_DIRECTORY="$(cd -- "$requested" && pwd -P)"; then
+        printf 'paths: not a directory: %s\n' "$requested" >&2
+        return 1
+    fi
+}
+
+paths_set_file() {
+    if [[ $# -ne 1 ]]; then
+        printf 'Usage: paths set_file <list-file>\n' >&2
+        return 2
+    fi
+
+    local requested="$1" directory state_file
+    directory="$(dirname -- "$requested")"
+    if ! mkdir -p -- "$directory" || ! directory="$(cd -- "$directory" && pwd -P)"; then
+        printf 'paths: cannot create list directory: %s\n' "$(dirname -- "$requested")" >&2
+        return 1
+    fi
+
+    PATHS_ACTIVE_FILE="$directory/$(basename -- "$requested")"
+    if ! touch -- "$PATHS_ACTIVE_FILE"; then
+        printf 'paths: cannot create list file: %s\n' "$PATHS_ACTIVE_FILE" >&2
+        return 1
+    fi
+
+    state_file="$(paths_state_file)"
+    if ! mkdir -p -- "$(dirname -- "$state_file")" || ! printf '%s\n' "$PATHS_ACTIVE_FILE" > "$state_file"; then
+        printf 'paths: cannot save active list file\n' >&2
+        return 1
+    fi
+
+    printf 'paths: active list file: %s\n' "$PATHS_ACTIVE_FILE"
+}
+
+paths_add() {
+    if [[ $# -gt 1 ]]; then
+        printf 'Usage: paths add [directory]\n' >&2
+        return 2
+    fi
+    paths_active_file || return
+    paths_directory "${1:-}" || return
+
+    if grep -Fqx -- "$PATHS_DIRECTORY" "$PATHS_ACTIVE_FILE"; then
+        printf 'paths: already listed: %s\n' "$PATHS_DIRECTORY"
+        return 0
+    fi
+
+    printf '%s\n' "$PATHS_DIRECTORY" >> "$PATHS_ACTIVE_FILE"
+    printf 'paths: added: %s\n' "$PATHS_DIRECTORY"
+}
+
+paths_del() {
+    if [[ $# -gt 1 ]]; then
+        printf 'Usage: paths del [directory]\n' >&2
+        return 2
+    fi
+    paths_active_file || return
+    paths_directory "${1:-}" || return
+
+    local temporary removed=1 entry
+    temporary="$(mktemp "${PATHS_ACTIVE_FILE}.tmp.XXXXXX")" || return 1
+    while IFS= read -r entry || [[ -n "$entry" ]]; do
+        if [[ "$entry" == "$PATHS_DIRECTORY" ]]; then
+            removed=0
+        else
+            printf '%s\n' "$entry" >> "$temporary"
+        fi
+    done < "$PATHS_ACTIVE_FILE"
+
+    if ! mv -- "$temporary" "$PATHS_ACTIVE_FILE"; then
+        rm -f -- "$temporary"
+        return 1
+    fi
+
+    if (( removed == 0 )); then
+        printf 'paths: removed: %s\n' "$PATHS_DIRECTORY"
+    else
+        printf 'paths: not listed: %s\n' "$PATHS_DIRECTORY"
+    fi
+}
+
+paths_run() {
+    if [[ $# -eq 0 ]]; then
+        printf 'Usage: paths run <command> [arguments ...]\n' >&2
+        return 2
+    fi
+    paths_active_file || return
+
+    local directory status=0 command_status original_directory="$PWD"
+    while IFS= read -r directory || [[ -n "$directory" ]]; do
+        [[ -z "$directory" ]] && continue
+        if [[ ! -d "$directory" ]]; then
+            printf 'paths: skipped missing directory: %s\n' "$directory" >&2
+            status=1
+            continue
+        fi
+
+        printf '\033[0;35m==> %s\033[0m\n' "$directory"
+        cd -- "$directory" || {
+            status=1
+            continue
+        }
+        if [[ $# -eq 1 ]]; then
+            # A single argument is a shell expression, so quoted compound
+            # commands such as 'git status && git diff' work as expected.
+            eval "$1"
+        else
+            # Keep ordinary command arguments intact, including spaces.
+            "$@"
+        fi
+        command_status=$?
+        (( command_status == 0 )) || status=1
+    done < "$PATHS_ACTIVE_FILE"
+
+    cd -- "$original_directory" || return 1
+    return "$status"
+}
+
+paths_main() {
+    case "${1:-}" in
+        set_file)
+            shift
+            paths_set_file "$@"
+            ;;
+        add)
+            shift
+            paths_add "$@"
+            ;;
+        del|delete)
+            shift
+            paths_del "$@"
+            ;;
+        run)
+            shift
+            paths_run "$@"
+            ;;
+        -h|--help|help|'')
+            paths_usage
+            ;;
+        *)
+            printf 'paths: unknown command: %s\n' "$1" >&2
+            paths_usage >&2
+            return 2
+            ;;
+    esac
+}
+
+paths_main "$@"
+paths_status=$?
+
+# When sourced by the shell wrapper, return rather than terminating that shell.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return "$paths_status"
+fi
+exit "$paths_status"

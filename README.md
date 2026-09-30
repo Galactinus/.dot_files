@@ -37,6 +37,20 @@ The `base` plugin contains core configurations that are shared across all enviro
 - Utility scripts
 - Prompt customization
 
+#### Directory helpers
+
+`cdr set_root [directory]` sets `PROJ_ROOT` (the current directory when it is
+omitted); `cdr` returns to that root.
+
+`paths` keeps a persistent active file of directories. Choose or create the
+file with `paths set_file ~/my-paths`, then add or remove directories with
+`paths add [directory]` and `paths del [directory]`. Paths are stored as
+absolute paths, one per line. Run a command in each listed directory with, for
+example, `paths run git status` or `paths run 'git status && git diff --stat'`.
+Each directory is announced in purple before its command runs. In an installed
+interactive shell, `paths` sources its standalone script so `run` uses the
+current bash environment; it restores the original directory afterwards.
+
 ### Adding Custom Plugins
 To add environment-specific configurations (e.g., work-specific settings):
 
@@ -66,4 +80,4 @@ my-custom-plugin/
 
 ## License
 
-MIT 
+MIT

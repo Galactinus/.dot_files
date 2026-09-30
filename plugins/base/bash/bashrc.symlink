@@ -124,10 +124,40 @@ fi
 
 #function for above variable
 cdr() {
-    if [[ -z "${PROJ_ROOT:-}" ]]; then
-        printf "PROJ_ROOT is not set\n"
+    case "${1:-}" in
+        set_root|set-root|root)
+            if [[ $# -gt 2 ]]; then
+                printf 'Usage: cdr set_root [directory]\n' >&2
+                return 2
+            fi
+
+            local root="${2:-$PWD}"
+            if ! PROJ_ROOT="$(cd -- "$root" && pwd -P)"; then
+                printf 'cdr: not a directory: %s\n' "$root" >&2
+                return 1
+            fi
+            export PROJ_ROOT
+            ;;
+        '')
+            if [[ -z "${PROJ_ROOT:-}" ]]; then
+                printf "PROJ_ROOT is not set\n" >&2
+                return 1
+            fi
+            cd -- "$PROJ_ROOT" || return
+            ;;
+        *)
+            printf 'Usage: cdr [set_root [directory]]\n' >&2
+            return 2
+            ;;
+    esac
+}
+
+# Source the standalone paths script so `paths run` executes in this shell.
+paths() {
+    local paths_script="${DOTFILES_ROOT:-$HOME/.dot_files}/plugins/base/scripts/paths"
+    if [[ ! -r "$paths_script" ]]; then
+        printf 'paths: script not found: %s\n' "$paths_script" >&2
         return 1
-    else
-        cd -- "$PROJ_ROOT" || return
     fi
+    source "$paths_script" "$@"
 }

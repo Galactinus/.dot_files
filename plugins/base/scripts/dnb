@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Delete a local branch and its origin branch.
+
+force=0
+case "${1:-}" in
+    -f|--force)
+        force=1
+        shift
+        ;;
+esac
+
+if [[ $# -ne 1 ]]; then
+    printf 'Usage: dnb [-f|--force] <branch-name>\n' >&2
+    exit 2
+fi
+
+if ! command -v git >/dev/null 2>&1; then
+    printf 'dnb: git is not installed or is not on PATH\n' >&2
+    exit 1
+fi
+
+branch="$1"
+if ! git check-ref-format --branch "$branch" >/dev/null; then
+    printf 'dnb: invalid branch name: %s\n' "$branch" >&2
+    exit 2
+fi
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf 'dnb: not inside a Git work tree\n' >&2
+    exit 1
+fi
+
+current_branch="$(git branch --show-current)"
+if [[ "$branch" == "$current_branch" ]]; then
+    printf 'dnb: cannot delete the current branch: %s\n' "$branch" >&2
+    exit 1
+fi
+
+local_exists=0
+remote_exists=0
+git show-ref --verify --quiet "refs/heads/$branch" && local_exists=1
+git show-ref --verify --quiet "refs/remotes/origin/$branch" && remote_exists=1
+
+if (( local_exists == 0 && remote_exists == 0 )); then
+    printf 'dnb: branch not found locally or on origin: %s\n' "$branch" >&2
+    exit 1
+fi
+
+if (( local_exists )); then
+    if (( force )); then
+        git branch -D "$branch" || exit $?
+    else
+        # -d deliberately refuses to delete a branch with unmerged work.
+        git branch -d "$branch" || exit $?
+    fi
+fi
+
+if (( remote_exists )); then
+    git push origin --delete "$branch"
+fi

@@ -6,6 +6,7 @@ DOTFILES_ROOT="`pwd`"
 PLUGINS_DIR="$DOTFILES_ROOT/plugins"
 GENERATED_DIR="$DOTFILES_ROOT/generated"
 DISABLED_PLUGINS_FILE="$GENERATED_DIR/.disabled_plugins"
+PROMPT_PLUGIN_FILE="$GENERATED_DIR/.selected_prompt_plugin"
 
 set -e
 
@@ -131,13 +132,14 @@ _install_completion() {
       ;;
   esac
   
-  COMPREPLY=($(compgen -W "--list -l --disable -d --enable -e" -- "$cur"))
+  COMPREPLY=($(compgen -W "--list -l --disable -d --enable -e --select-prompt -p" -- "$cur"))
 }
 
 # Register completion
 complete -F _install_completion ./install
 
 # Parse arguments
+select_prompt_only=false
 while [[ $# -gt 0 ]]; do
   case $1 in
     --list|-l)
@@ -158,11 +160,96 @@ while [[ $# -gt 0 ]]; do
       enable_plugin "$2"
       exit 0
       ;;
+    --select-prompt|-p)
+      select_prompt_only=true
+      ;;
     *)
       ;;
   esac
   shift
 done
+
+# Discover prompt files using the Bash-specific plugin convention. The base
+# plugin is listed first, followed by the remaining enabled plugins.
+find_prompt_plugins() {
+  PROMPT_PLUGINS=()
+
+  if [ -f "$PLUGINS_DIR/base/bash/prompt.bash" ] && ! is_plugin_disabled "base"; then
+    PROMPT_PLUGINS+=("base")
+  fi
+
+  for plugin_dir in "$PLUGINS_DIR"/*; do
+    if [ "$plugin_dir" != "$PLUGINS_DIR/base" ] && [ -d "$plugin_dir" ]; then
+      local plugin_name="$(basename "$plugin_dir")"
+      if ! is_plugin_disabled "$plugin_name" && [ -f "$plugin_dir/bash/prompt.bash" ]; then
+        PROMPT_PLUGINS+=("$plugin_name")
+      fi
+    fi
+  done
+}
+
+prompt_plugin_is_available() {
+  local plugin="$1"
+  local candidate
+  for candidate in "${PROMPT_PLUGINS[@]}"; do
+    [ "$candidate" = "$plugin" ] && return 0
+  done
+  return 1
+}
+
+load_saved_prompt_plugin() {
+  SELECTED_PROMPT_PLUGIN=""
+  [ -f "$PROMPT_PLUGIN_FILE" ] || return 0
+
+  local saved_plugin
+  IFS= read -r saved_plugin < "$PROMPT_PLUGIN_FILE" || true
+  if prompt_plugin_is_available "$saved_plugin"; then
+    SELECTED_PROMPT_PLUGIN="$saved_plugin"
+  fi
+}
+
+select_prompt_plugin() {
+  find_prompt_plugins
+
+  if [ "${#PROMPT_PLUGINS[@]}" -eq 0 ]; then
+    echo "Warning: No enabled plugins provide bash/prompt.bash; no prompt will be configured."
+    SELECTED_PROMPT_PLUGIN=""
+    return 1
+  fi
+
+  echo "Available prompts:"
+  local index
+  for index in "${!PROMPT_PLUGINS[@]}"; do
+    local plugin="${PROMPT_PLUGINS[$index]}"
+    printf '  %d) %s (%s)\n' "$((index + 1))" "$plugin" "$PLUGINS_DIR/$plugin/bash/prompt.bash"
+  done
+
+  local choice
+  while true; do
+    user "Choose a prompt [1-${#PROMPT_PLUGINS[@]}]:"
+    if ! read -r choice; then
+      fail "Prompt selection requires an interactive response"
+    fi
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#PROMPT_PLUGINS[@]} )); then
+      SELECTED_PROMPT_PLUGIN="${PROMPT_PLUGINS[$((choice - 1))]}"
+      printf '%s\n' "$SELECTED_PROMPT_PLUGIN" > "$PROMPT_PLUGIN_FILE"
+      success "Selected prompt: $SELECTED_PROMPT_PLUGIN"
+      return 0
+    fi
+    echo "Please enter a number from 1 to ${#PROMPT_PLUGINS[@]}."
+  done
+}
+
+ensure_prompt_plugin_selected() {
+  find_prompt_plugins
+  load_saved_prompt_plugin
+
+  if [ -n "$SELECTED_PROMPT_PLUGIN" ]; then
+    return 0
+  fi
+
+  select_prompt_plugin || true
+}
 
 # Function to generate main bash configuration files
 generate_bash_config () {
@@ -293,11 +380,11 @@ generate_bash_config () {
     fi
   done
 
-  # Finally, source the prompt configuration last (for bashrc only)
-  if [ "$config_type" = "bashrc" ] && ! is_plugin_disabled "base"; then
-    new_file="$PLUGINS_DIR/base/prompt.bash"
+  # Finally, source the selected prompt configuration last (for bashrc only).
+  if [ "$config_type" = "bashrc" ] && [ -n "$SELECTED_PROMPT_PLUGIN" ]; then
+    new_file="$PLUGINS_DIR/$SELECTED_PROMPT_PLUGIN/bash/prompt.bash"
     if [ -f "$new_file" ]; then
-      echo "# Source prompt configuration (last to override any other prompt settings): $new_file" >> "$main_file"
+      echo "# Source selected prompt configuration last: $new_file" >> "$main_file"
       echo "if [ -f \"$new_file\" ]; then" >> "$main_file"
       echo "    source \"$new_file\"" >> "$main_file"
       echo "fi" >> "$main_file"
@@ -411,6 +498,10 @@ install_plugins () {
   overwrite_all=false
   backup_all=false
   skip_all=false
+
+  # First installs and upgrades without a valid saved choice must explicitly
+  # choose a prompt, even when only the base prompt is available.
+  ensure_prompt_plugin_selected
   
   # Generate main bash configuration files
   generate_bash_config "bashrc"
@@ -451,6 +542,24 @@ install_plugins () {
   done
 }
 
+select_and_apply_prompt () {
+  select_prompt_plugin || true
+  generate_bash_config "bashrc"
+
+  local bashrc_dest="$HOME/.bashrc"
+  if [ -L "$bashrc_dest" ] && [ "$(readlink "$bashrc_dest")" = "$GENERATED_DIR/bashrc" ]; then
+    success "Updated prompt selection in $bashrc_dest"
+  else
+    echo "Warning: $bashrc_dest is not managed by these dotfiles."
+    echo "Please run ./install first to install the generated Bash configuration."
+  fi
+}
+
+if [ "$select_prompt_only" = true ]; then
+  select_and_apply_prompt
+  exit 0
+fi
+
 # If no arguments provided, run the installation
 if [ $# -eq 0 ]; then
   install_plugins
@@ -462,6 +571,7 @@ if [ $# -eq 0 ]; then
   echo '  ./install --list, -l          List all plugins and their status'
   echo '  ./install --disable, -d       Disable a plugin'
   echo '  ./install --enable, -e        Enable a plugin'
+  echo '  ./install --select-prompt, -p Choose the Bash prompt'
   echo ''
   echo 'Base customizations are in plugins/base'
   echo 'Each plugin can contain:'

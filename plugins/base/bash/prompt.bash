@@ -1,4 +1,4 @@
-# Set the bash prompt (to be sourced by bashrc)
+# Set the Bash prompt (to be sourced by bashrc).
 
 ##############################################################################
 # Color definitions
@@ -64,17 +64,56 @@ __prompt_chroot() {
 
 # Host component: username@hostname
 __prompt_host() {
-    printf "%s@%s" "$(whoami)" "$(hostname)"
+    printf '%s@%s' "$USER" "${HOSTNAME%%.*}"
 }
 
 # Directory component: current directory name
 __prompt_dir() {
-    printf '%s' "${PWD##*/}"
+    local dir="${PWD##*/}"
+    printf '%s' "${dir:-/}"
 }
 
 # Git component: (branch-name hash)
 __prompt_git() {
     printf "%s" "$(__git_ps1 "(%s $(git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git log -1 --pretty=oneline | cut -c -7))")"
+}
+
+# Return the display width of plain prompt text. `wc -L` uses the active
+# locale, so wide characters take the space they occupy in the terminal.
+__prompt_visible_width() {
+    printf '%s\n' "$1" | wc -L
+}
+
+# Cache the dynamic prompt data once before Bash displays each prompt. The same
+# values are used for both rendering and deciding where to put its marker.
+__prompt_update() {
+    __prompt_time_value="$(__prompt_time)"
+    __prompt_chroot_value="$(__prompt_chroot)"
+    __prompt_host_value="$(__prompt_host)"
+    __prompt_dir_value="$(__prompt_dir)"
+    __prompt_git_value="$(__prompt_git)"
+
+    __prompt_prefix_value="${__prompt_time_value} ${__prompt_chroot_value}${__prompt_host_value} ${__prompt_dir_value} ${__prompt_git_value}"
+    __prompt_prefix_width="$(__prompt_visible_width "$__prompt_prefix_value")"
+}
+
+# Put the marker on its own line unless enough input space remains after the
+# visible prompt prefix. COLUMNS is maintained by bash's `checkwinsize` option
+# (enabled in bash_sym). DOTFILES_PROMPT_NARROW_COLUMNS controls the minimum
+# remaining input width and defaults to 80 columns.
+__prompt_marker() {
+    local threshold="${DOTFILES_PROMPT_NARROW_COLUMNS:-80}"
+
+    if [[ "$threshold" =~ ^[0-9]+$ && "${COLUMNS:-0}" =~ ^[0-9]+$ ]] \
+        && (( COLUMNS - __prompt_prefix_width < threshold )); then
+        printf '\n'
+    fi
+
+    if (( EUID == 0 )); then
+        printf '# '
+    else
+        printf '$ '
+    fi
 }
 
 ##############################################################################
@@ -134,10 +173,13 @@ GIT_PS1_SHOWCOLORHINTS=true
 
 # Show current branch in prompt if in git repo.
 if [ "$color_prompt" = yes ]; then
-  PS1='\[\033[01;30m\][$(date +%H:%M:%S)] \[\033[01;35m\]${debian_chroot:+($debian_chroot)}\[\033[32m\]\u@\h\[\033[00m\] \[\033[0;34m\]\W \[\033[01;35m\]$(__git_ps1 "(%s $(git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git log -1 --pretty=oneline | cut -c -7))")\[\033[00m\]\$ '
+  PS1='\[\033[01;30m\]${__prompt_time_value} \[\033[01;35m\]${__prompt_chroot_value}\[\033[32m\]${__prompt_host_value}\[\033[00m\] \[\033[0;34m\]${__prompt_dir_value} \[\033[01;35m\]${__prompt_git_value}\[\033[00m\]$(__prompt_marker)'
 else
-  PS1='[$(date +%H:%M:%S)] ${debian_chroot:+($debian_chroot)}\u@\h \w $(__git_ps1 "(%s $(git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git log -1 --pretty=oneline | cut -c -7))")\$ '
+  PS1='${__prompt_time_value} ${__prompt_chroot_value}${__prompt_host_value} ${__prompt_dir_value} ${__prompt_git_value}$(__prompt_marker)'
 fi
+
+# Preserve an existing hook while ensuring our cached values are refreshed last.
+PROMPT_COMMAND="${PROMPT_COMMAND:+${PROMPT_COMMAND}; }__prompt_update"
 
 unset color_prompt force_color_prompt
 

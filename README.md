@@ -28,6 +28,9 @@ This repository contains my personal dotfiles with a plugin-based configuration 
    ./install
    ```
 
+   On the first run, choose which enabled plugin supplies the Bash prompt. Use
+   `./install --select-prompt` later to change that choice.
+
 ## Plugin System
 
 ### Base Plugin
@@ -66,6 +69,7 @@ To add environment-specific configurations (e.g., work-specific settings):
 
 ### Plugin Structure
 Each plugin can contain:
+- `bash/prompt.bash` to provide a selectable Bash prompt
 - Files ending in `.symlink` that will be automatically linked to your home directory
 - An optional `install.sh` script for additional setup steps
 

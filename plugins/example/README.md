@@ -10,7 +10,8 @@ plugins/example/
 ├── install.sh             # Plugin-specific installation script
 ├── bash/
 │   ├── alias.bash         # Plugin-specific aliases
-│   └── bashrc.symlink     # Main bash configurations
+│   ├── bashrc.symlink     # Main bash configurations
+│   └── prompt.bash        # Optional selectable Bash prompt
 ├── scripts/
 │   └── example-tool       # Utility scripts
 └── config/                # Additional configuration files
@@ -33,6 +34,9 @@ The installation will:
 3. Install utility scripts
 4. Create default configurations
 
+To provide a selectable prompt, add `bash/prompt.bash`; run
+`./install --select-prompt` from the dotfiles root to choose it.
+
 ## Configuration
 
 Edit `~/.config/example/settings` to customize the plugin settings.
@@ -51,4 +55,4 @@ To add your own configurations:
 
 1. Edit the appropriate files in the bash directory
 2. Add new scripts to the scripts directory
-3. Add new configuration files to the config directory 
+3. Add new configuration files to the config directory

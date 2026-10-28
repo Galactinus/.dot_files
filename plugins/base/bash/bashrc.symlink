@@ -162,11 +162,18 @@ paths() {
     source "$paths_script" "$@"
 }
 
+# Select the Python runner without changing the scripts' interpreter directives.
+source "${DOTFILES_ROOT:-$HOME/.dot_files}/plugins/base/lib/python-launcher.bash"
+
 # Provide the catalog with aliases and functions from this interactive shell.
 dotcommands() {
     DOTCOMMANDS_BASH_ALIASES="$(alias -p)" \
     DOTCOMMANDS_BASH_FUNCTIONS="$(declare -F)" \
-        command dotcommands "$@"
+        _dotfiles_python_run "${DOTFILES_ROOT:-$HOME/.dot_files}/plugins/base/scripts/dotcommands" "$@"
+}
+
+renamer() {
+    _dotfiles_python_run "${DOTFILES_ROOT:-$HOME/.dot_files}/plugins/base/scripts/renamer" "$@"
 }
 
 _paths_completion() {

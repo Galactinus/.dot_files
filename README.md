@@ -56,6 +56,18 @@ current bash environment; it restores the original directory afterwards.
 
 #### Command discovery and bulk renaming
 
+The interactive Bash runners for the Python-based dotfiles commands require
+Python 3.12 or newer. They try `python3.12`, then `python3`, `python3.14`, and
+`python3.13`, accepting the first executable that meets the requirement. To select a specific
+interpreter, set `DOTFILES_PYTHON` to its executable name or absolute path,
+for example `export DOTFILES_PYTHON=/usr/bin/python3.12`. Put that export in
+your shell configuration to keep it across sessions. An invalid or too-old
+explicit selection reports an error instead of silently using another Python.
+This setting only affects dotfiles commands that call the runner; it does not
+change `PATH`, redefine `python3`, or select Python for other programs.
+Reload Bash configuration after installation or changes. Directly executing a
+script by its path bypasses the runner and uses its own `python3` shebang.
+
 `dotcommands` lists callable commands, scripts, and functions from enabled plugins.
 Add `-a` to include aliases; `-f` excludes functions and `-s` excludes scripts.
 `-A` includes all categories, and `-t TYPE` also includes a plugin-defined type
@@ -94,7 +106,7 @@ unavailable, and its hook is not run. This hook is executable plugin code and
 inherits the current environment; it should only perform a quick, read-only
 status check.
 
-`renamer [path ...]` requires Python 3.11 or newer and opens an interactive recursive file-renaming preview,
+`renamer [path ...]` opens an interactive recursive file-renaming preview,
 defaulting to the current directory. Paths may be files, directories or globs
 (quote globs to have the command expand them). The filter is a Python regular
 expression matched against relative paths, and the rename regex matches file

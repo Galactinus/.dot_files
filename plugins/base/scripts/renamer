@@ -1,0 +1,682 @@
+#!/usr/bin/env python3
+"""Interactively preview and apply regular-expression file renames."""
+import argparse
+import curses
+import difflib
+import glob
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+
+
+OPTION_DEFAULTS = {"hidden": True, "links": True, "follow": False, "protect": False}
+
+
+def options_path():
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "renamer" / "options.json"
+
+
+def load_options():
+    options = OPTION_DEFAULTS.copy()
+    path = options_path()
+    try:
+        with path.open(encoding="utf-8") as stream:
+            saved = json.load(stream)
+        if not isinstance(saved, dict):
+            raise ValueError("expected an object")
+        for key in options:
+            if key in saved:
+                if not isinstance(saved[key], bool):
+                    raise ValueError(f"{key} must be true or false")
+                options[key] = saved[key]
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, UnicodeError) as exc:
+        return OPTION_DEFAULTS.copy(), f"Could not load options from {path}: {exc}"
+    return options, ""
+
+
+def save_options(options):
+    path = options_path()
+    temporary = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=".options-", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(options, stream, indent=2)
+            stream.write("\n")
+        os.replace(temporary, path)
+        temporary = None
+        return ""
+    except OSError as exc:
+        return f"Could not save options to {path}: {exc}"
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def options_menu(screen, options):
+    """Edit and immediately save options in a small window."""
+    height, width = screen.getmaxyx()
+    if height < 10 or width < 26:
+        return options, "Terminal too small for options (minimum 26x10)"
+    menu_width = min(54, width - 2)
+    menu = curses.newwin(9, menu_width, 0, (width - menu_width) // 2)
+    menu.keypad(True)
+    choices = (("hidden", "Include hidden files"), ("links", "Include symlinks"),
+               ("follow", "Follow directory symlinks"), ("protect", "Protect extension"))
+    selected, status = 0, ""
+    while True:
+        menu.erase()
+        menu.box()
+        menu.addnstr(0, 2, " Options ", menu_width - 4, curses.A_BOLD)
+        for index, (name, label) in enumerate(choices):
+            text = f"[{'x' if options[name] else ' '}] {label}"
+            menu.addnstr(index + 1, 2, text, menu_width - 4, curses.A_REVERSE if index == selected else 0)
+        menu.addnstr(6, 2, "Up/Down: select  Space: toggle  q: back", menu_width - 4)
+        if status:
+            menu.addnstr(7, 2, status, menu_width - 4)
+        menu.refresh()
+        key = menu.get_wch()
+        if key in ("q", "Q", "\x1b"):
+            return options, status
+        if key == curses.KEY_UP:
+            selected = (selected - 1) % len(choices)
+        elif key == curses.KEY_DOWN:
+            selected = (selected + 1) % len(choices)
+        elif key == " ":
+            name = choices[selected][0]
+            options[name] = not options[name]
+            status = save_options(options)
+        elif key == curses.KEY_RESIZE:
+            return options, status
+
+
+def collect(arguments, hidden=True, links=True, follow=False):
+    """Return (path, display path) pairs and errors, without following loops."""
+    candidates, errors, visited, seen = [], [], set(), set()
+    inputs = arguments or ["."]
+
+    def add(path, display):
+        key = os.path.abspath(path)
+        if key not in seen:
+            seen.add(key)
+            candidates.append((Path(key), display))
+
+    def walk(directory, relative=""):
+        try:
+            stat = os.stat(directory)
+            identity = (stat.st_dev, stat.st_ino)
+            if identity in visited:
+                return
+            visited.add(identity)
+            with os.scandir(directory) as iterator:
+                entries = sorted(iterator, key=lambda item: item.name)
+            for entry in entries:
+                if not hidden and entry.name.startswith("."):
+                    continue
+                display = os.path.join(relative, entry.name)
+                try:
+                    if entry.is_symlink():
+                        if links:
+                            add(entry.path, display)
+                        if follow and entry.is_dir(follow_symlinks=True):
+                            walk(entry.path, display)
+                    elif entry.is_dir(follow_symlinks=False):
+                        walk(entry.path, display)
+                    elif entry.is_file(follow_symlinks=False):
+                        add(entry.path, display)
+                except OSError as exc:
+                    errors.append(f"{entry.path}: {exc}")
+        except OSError as exc:
+            errors.append(f"{directory}: {exc}")
+
+    for arg in inputs:
+        expanded = glob.glob(arg, recursive=True, include_hidden=hidden) if glob.has_magic(arg) else [arg]
+        if not expanded:
+            errors.append(f"No paths match: {arg}")
+        for path in expanded:
+            if not os.path.lexists(path):
+                errors.append(f"Path does not exist: {path}")
+            elif os.path.islink(path):
+                if links:
+                    add(path, os.path.basename(os.path.normpath(path)))
+                if follow and os.path.isdir(path):
+                    walk(path)
+            elif os.path.isdir(path):
+                walk(path)
+            elif os.path.isfile(path):
+                add(path, os.path.basename(path))
+    return candidates, errors
+
+
+def replacement_tokens(value):
+    """Yield literal text or numbered group references in replacement text."""
+    index = 0
+    while index < len(value):
+        if value[index] == "$" and index + 1 < len(value):
+            if value[index + 1] == "$":
+                yield "$$", None
+                index += 2
+                continue
+            match = re.match(r"\d+", value[index + 1:])
+            if match:
+                yield "$" + match.group(), int(match.group())
+                index += 1 + len(match.group())
+                continue
+        yield value[index], None
+        index += 1
+
+
+def replacement_template(value, regex):
+    """Translate $1 and $$ to Python's unambiguous replacement syntax."""
+    result = []
+    for token, group in replacement_tokens(value):
+        if group is not None:
+            if group > regex.groups:
+                raise ValueError(f"Replacement references missing group ${group}")
+            result.append(r"\g<" + str(group) + ">")
+        else:
+            result.append(("$" if token == "$$" else token).replace("\\", "\\\\"))
+    return "".join(result)
+
+
+def regex_colors(pattern):
+    """Classify regex characters as plain, syntax, escape, or error."""
+    colors = ["plain"] * len(pattern)
+    groups = []
+    in_class = False
+    class_start = None
+    can_repeat = False
+    repeated = False
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "\\":
+            end = min(len(pattern), i + 2)
+            colors[i:end] = ["escape"] * (end - i)
+            if end == i + 1:
+                colors[i] = "error"
+            elif not in_class:
+                can_repeat, repeated = pattern[i + 1] not in "AbBZ", False
+            i = end
+            continue
+        if in_class:
+            if char == "]" and i > class_start + 1 and not (i == class_start + 2 and pattern[class_start + 1] == "^"):
+                colors[i] = "syntax"
+                in_class = False
+                can_repeat, repeated = True, False
+            i += 1
+            continue
+        if char == "[":
+            colors[i] = "syntax"
+            in_class, class_start = True, i
+            can_repeat, repeated = False, False
+        elif char == "(":
+            colors[i] = "syntax"
+            groups.append(i)
+            can_repeat, repeated = False, False
+            # Group prefixes such as (?:, (?= and (?P<name> are syntax,
+            # not a repetition operator following an opening parenthesis.
+            if i + 1 < len(pattern) and pattern[i + 1] == "?":
+                colors[i + 1] = "syntax"
+                i += 1
+        elif char == ")":
+            colors[i] = "syntax" if groups else "error"
+            if groups:
+                groups.pop()
+            can_repeat, repeated = True, False
+        elif char in "*+?":
+            if can_repeat and (not repeated or char in "?+"):
+                colors[i] = "syntax"
+                if repeated:
+                    can_repeat = False
+                repeated = True
+            else:
+                colors[i] = "error"
+                can_repeat = False
+        elif char == "{":
+            match = re.match(r"\{\d+(?:,\d*)?\}", pattern[i:])
+            if match:
+                end = i + len(match.group())
+                colors[i:end] = ["syntax" if can_repeat and not repeated else "error"] * (end - i)
+                repeated = True
+                i = end - 1
+            else:
+                can_repeat, repeated = True, False
+        elif char in ".^$|":
+            colors[i] = "syntax"
+            can_repeat, repeated = char == ".", False
+        else:
+            can_repeat, repeated = True, False
+        i += 1
+    if in_class:
+        colors[class_start] = "error"
+    for start in groups:
+        colors[start] = "error"
+    try:
+        re.compile(pattern)
+    except re.error as exc:
+        if exc.pos is not None and pattern:
+            colors[min(exc.pos, len(pattern) - 1)] = "error"
+    return colors
+
+
+def rename_colors(pattern):
+    """Color rename literals and capture groups while retaining syntax errors."""
+    colors = regex_colors(pattern)
+    if not pattern:
+        return colors
+    stack, current, number = [], None, 0
+    in_class, class_start, i = False, 0, 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "\\":
+            i += 2
+            continue
+        if in_class:
+            if char == "]" and i > class_start + 1 and not (i == class_start + 2 and pattern[class_start + 1] == "^"):
+                in_class = False
+        elif char == "[":
+            in_class, class_start = True, i
+        elif char == "(":
+            if pattern.startswith("(?#", i):
+                end = pattern.find(")", i + 3)
+                i = len(pattern) if end < 0 else end + 1
+                continue
+            capturing = not pattern.startswith("(?", i) or pattern.startswith("(?P<", i)
+            if capturing:
+                number += 1
+            stack.append((current, number if capturing else None))
+            if capturing:
+                current = number
+                if colors[i] != "error":
+                    colors[i] = f"group{(number - 1) % 4}"
+            # The condition in (?(id)yes|no) is not a nested group.
+            if pattern.startswith("(?(", i):
+                end = pattern.find(")", i + 3)
+                if end >= 0:
+                    i = end
+        elif char == ")" and stack:
+            previous, group = stack.pop()
+            if group is not None and colors[i] != "error":
+                colors[i] = f"group{(group - 1) % 4}"
+            current = previous
+        elif colors[i] == "plain":
+            colors[i] = f"group{(current - 1) % 4}" if current else "match"
+        i += 1
+    return colors
+
+
+def match_colors(regex, text):
+    """Return match colors by character; inner captures take precedence."""
+    colors = ["plain"] * len(text)
+    if regex is None or not regex.pattern:
+        return colors
+    for match in regex.finditer(text):
+        start, end = match.span()
+        colors[start:end] = ["match"] * (end - start)
+        for group in range(1, regex.groups + 1):
+            start, end = match.span(group)
+            if start >= 0:
+                colors[start:end] = [f"group{(group - 1) % 4}"] * (end - start)
+    return colors
+
+
+def filename_match_colors(regex, display, protect=False):
+    """Highlight the basename portion searched by the rename expression."""
+    name = os.path.basename(display)
+    prefix_length = len(display) - len(name)
+    stem, suffix = os.path.splitext(name) if protect else (name, "")
+    return ["plain"] * prefix_length + match_colors(regex, stem) + ["plain"] * len(suffix)
+
+
+def replacement_colors(value, regex):
+    colors = []
+    for token, group in replacement_tokens(value):
+        color = "changed"
+        if group is not None and regex is not None:
+            color = "error" if group > regex.groups else ("match" if group == 0 else f"group{(group - 1) % 4}")
+        colors.extend([color] * len(token))
+    return colors
+
+
+def reconstructed_colors(regex, replacement, display, protect=False):
+    """Color text inserted by capture references, using the same substitutions as preview."""
+    name = os.path.basename(display)
+    prefix_length = len(display) - len(name)
+    stem, suffix = os.path.splitext(name) if protect else (name, "")
+    if regex is None or not regex.pattern or not replacement:
+        return ["plain"] * len(display)
+    try:
+        replacement_template(replacement, regex)
+    except ValueError:
+        return ["plain"] * len(display)
+    tokens = list(replacement_tokens(replacement))
+    colors, last = ["plain"] * prefix_length, 0
+
+    def replace(match):
+        nonlocal last
+        colors.extend(["plain"] * (match.start() - last))
+        result = []
+        for token, group in tokens:
+            value = (match.group(group) or "") if group is not None else ("$" if token == "$$" else token)
+            color = "plain" if group is None else ("match" if group == 0 else f"group{(group - 1) % 4}")
+            colors.extend([color] * len(value))
+            result.append(value)
+        last = match.end()
+        return "".join(result)
+
+    regex.sub(replace, stem)
+    colors.extend(["plain"] * (len(stem) - last + len(suffix)))
+    return colors
+
+
+def result_colors(regex, replacement, display, target_display, protect=False):
+    """Color unchanged and changed filename text, with capture colors on top."""
+    source = os.path.basename(display)
+    target = os.path.basename(target_display)
+    prefix_length = len(target_display) - len(target)
+    colors = ["changed"] * len(target)
+    matcher = difflib.SequenceMatcher(None, source, target, autojunk=False)
+    for _, target_start, length in matcher.get_matching_blocks():
+        colors[target_start:target_start + length] = ["unchanged"] * length
+    colors = ["plain"] * prefix_length + colors
+    group_colors = reconstructed_colors(regex, replacement, display, protect)
+    if len(group_colors) == len(colors):
+        for index, color in enumerate(group_colors):
+            if color.startswith("group") or color == "match":
+                colors[index] = color
+    return colors
+
+
+def capture_hints(regex, rows, protect=False):
+    """Choose the match with the most populated groups; ties keep file order."""
+    if regex is None or not regex.pattern or not regex.groups:
+        return None
+    best = None
+    best_count = -1
+    for source, _, display in rows:
+        name = source.name
+        searched = os.path.splitext(name)[0] if protect else name
+        for match in regex.finditer(searched):
+            count = sum(value is not None for value in match.groups())
+            if count > best_count:
+                best = (display, match.groups())
+                best_count = count
+    return best
+
+
+def preview(candidates, filter_text, pattern, replacement, protect=False):
+    try:
+        filter_re = re.compile(filter_text)
+    except re.error as exc:
+        return [], [str(exc)]
+    regex, template, errors = None, None, []
+    if pattern:
+        try:
+            regex = re.compile(pattern)
+            template = replacement_template(replacement, regex)
+        except (re.error, ValueError) as exc:
+            errors.append(str(exc))
+            regex = None
+    rows = []
+    for source, display in candidates:
+        if not filter_re.search(display):
+            continue
+        name = source.name
+        stem, suffix = os.path.splitext(name) if protect else (name, "")
+        new_name = regex.sub(template, stem) + suffix if regex and replacement else name
+        if new_name in ("", ".", "..") or "/" in new_name or "\x00" in new_name:
+            errors.append(f"Invalid destination for {display}: {new_name!r}")
+            continue
+        rows.append((source, source.with_name(new_name), display))
+    return rows, errors
+
+
+def conflicts(moves):
+    """Identify conflicts, including dependencies on another conflicting move."""
+    counts = {}
+    for _, target, _ in moves:
+        counts[target] = counts.get(target, 0) + 1
+    bad = {source for source, target, _ in moves if counts[target] > 1}
+    # Moving a traversed directory symlink would invalidate descendant paths.
+    for source, _, _ in moves:
+        if source.is_symlink() and source.is_dir() and any(source in other.parents for other, _, _ in moves):
+            bad.add(source)
+    while True:
+        movable = {source for source, _, _ in moves if source not in bad}
+        updated = bad | {source for source, target, _ in moves if os.path.lexists(target) and target not in movable}
+        if updated == bad:
+            return bad
+        bad = updated
+
+
+def apply_moves(moves):
+    """Stage all names then publish without overwriting; attempt rollback on failure."""
+    staged, published = [], []
+    try:
+        for source, target, _ in moves:
+            fd, temp = tempfile.mkstemp(prefix=".renamer-", dir=source.parent)
+            os.close(fd)
+            os.unlink(temp)
+            os.rename(source, temp)
+            staged.append((source, target, Path(temp)))
+        for source, target, temp in staged:
+            # Hard-linking a symlink links the symlink itself, not its target.
+            os.link(temp, target, follow_symlinks=False)
+            published.append((source, target, temp))
+            os.unlink(temp)
+        return None
+    except (OSError, KeyboardInterrupt) as exc:
+        rollback_errors = []
+        # Move published entries back into their now-free staging paths first.
+        for source, target, temp in reversed(published):
+            try:
+                if not os.path.lexists(temp):
+                    os.rename(target, temp)
+                else:
+                    os.unlink(target)
+            except OSError as rollback:
+                rollback_errors.append(str(rollback))
+        for source, _, temp in reversed(staged):
+            if os.path.lexists(temp):
+                try:
+                    if os.path.lexists(source):
+                        raise FileExistsError(f"cannot restore {source}: destination exists; staged at {temp}")
+                    os.rename(temp, source)
+                except OSError as rollback:
+                    rollback_errors.append(str(rollback))
+        if isinstance(exc, KeyboardInterrupt):
+            if rollback_errors:
+                raise OSError("Interrupted; rollback problems: " + "; ".join(rollback_errors)) from exc
+            raise
+        return f"{exc}" + ("; rollback problems: " + "; ".join(rollback_errors) if rollback_errors else "")
+
+
+def run_ui(screen, arguments):
+    curses.curs_set(1)
+    screen.keypad(True)
+    if curses.has_colors():
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_RED, -1)
+        curses.init_pair(2, curses.COLOR_BLUE, -1)
+        curses.init_pair(3, curses.COLOR_MAGENTA, -1)
+        curses.init_pair(4, curses.COLOR_CYAN, -1)
+        curses.init_pair(5, curses.COLOR_CYAN, -1)
+        curses.init_pair(6, curses.COLOR_YELLOW, -1)
+        curses.init_pair(7, curses.COLOR_MAGENTA, -1)
+        curses.init_pair(8, curses.COLOR_WHITE, -1)
+        curses.init_pair(9, curses.COLOR_GREEN, -1)
+    fields = ["", "", ""]
+    field, cursor, scroll = 0, 0, 0
+    options, status = load_options()
+    hidden, links, follow, protect = (options[key] for key in ("hidden", "links", "follow", "protect"))
+    candidates, scan_errors = collect(arguments, hidden, links, follow)
+
+    def draw(y, x, text, attr=0, limit=None):
+        height, width = screen.getmaxyx()
+        if 0 <= y < height and x < width:
+            try:
+                available = max(0, width - x - 1)
+                screen.addnstr(y, x, str(text), min(available, limit) if limit is not None else available, attr)
+            except curses.error:
+                pass
+
+    while True:
+        rows, errors = preview(candidates, *fields, protect)
+        try:
+            rename_re = re.compile(fields[1])
+        except re.error:
+            rename_re = None
+        moves = [row for row in rows if row[0] != row[1]]
+        bad = conflicts(moves)
+        rows.sort(key=lambda item: (item[0] not in bad, item[2]))
+        height, width = screen.getmaxyx()
+        hints = capture_hints(rename_re, rows, protect)
+        longest_row = max((len(display) + 4 + len(os.path.join(os.path.dirname(display), target.name)) + (9 if source in bad else 0)
+                           for source, target, display in rows), default=0)
+        panel_start = max(40, longest_row + 2)
+        if not hints or width < 70 or panel_start + 20 >= width:
+            panel_start = None
+        screen.erase()
+        draw(0, 0, "renamer | Tab: select  Enter: open  Ctrl-C: quit")
+        for i, label in enumerate(("Filter regex", "Rename regex", "Replacement")):
+            prefix = f"{label}: "
+            draw(i + 2, 0, prefix, curses.A_BOLD if i == field else 0)
+            if curses.has_colors():
+                colors = regex_colors(fields[i]) if i == 0 else (rename_colors(fields[i]) if i == 1 else replacement_colors(fields[i], rename_re))
+                for pos, (char, color) in enumerate(zip(fields[i], colors)):
+                    pair = {"error": 1, "syntax": 2, "escape": 3, "match": 4, "group0": 5, "group1": 6, "group2": 7, "group3": 8, "changed": 2}.get(color, 0)
+                    draw(i + 2, len(prefix) + pos, char, curses.color_pair(pair))
+            else:
+                draw(i + 2, len(prefix), fields[i])
+        draw(5, 0, "[Options]", curses.A_REVERSE if field == 3 else 0)
+        draw(5, 12, "[Apply]", curses.A_REVERSE if field == 4 else 0)
+        draw(6, 0, f"Hidden: {'on' if hidden else 'off'}  Links: {'on' if links else 'off'}  Follow: {'on' if follow else 'off'}  Protect extension: {'on' if protect else 'off'}")
+        messages = scan_errors + errors
+        draw(7, 0, messages[0] if messages else status, curses.color_pair(1) if messages and curses.has_colors() else 0)
+        draw(8, 0, f"Files: {len(rows)}  Changes: {len(moves)}  Conflicts: {len(bad)}  |  Up/Down: scroll")
+        available = max(0, height - 10)
+        scroll = max(0, min(scroll, max(0, len(rows) - available)))
+        for row, (source, target, display) in enumerate(rows[scroll:scroll + available], 9):
+            target_display = os.path.join(os.path.dirname(display), target.name)
+            conflict_attr = curses.color_pair(1) if source in bad and curses.has_colors() else 0
+            prefix = "CONFLICT " if source in bad else ""
+            draw(row, 0, f"{prefix}{display} -> {target_display}", conflict_attr, panel_start - 1 if panel_start else None)
+            if curses.has_colors():
+                for pos, (char, color) in enumerate(zip(display, filename_match_colors(rename_re, display, protect))):
+                    pair = {"match": 4, "group0": 5, "group1": 6, "group2": 7, "group3": 8}.get(color)
+                    if pair and (panel_start is None or len(prefix) + pos < panel_start - 1):
+                        draw(row, len(prefix) + pos, char, curses.color_pair(pair) | curses.A_BOLD)
+                target_offset = len(prefix) + len(display) + 4
+                for pos, (char, color) in enumerate(zip(target_display, result_colors(rename_re, fields[2], display, target_display, protect))):
+                    pair = {"match": 4, "group0": 5, "group1": 6, "group2": 7, "group3": 8, "unchanged": 9, "changed": 2}.get(color)
+                    if pair and (panel_start is None or target_offset + pos < panel_start - 1):
+                        draw(row, target_offset + pos, char, curses.color_pair(pair) | curses.A_BOLD)
+        if panel_start is not None:
+            display, groups = hints
+            draw(8, panel_start, "Capture groups", curses.A_BOLD)
+            draw(9, panel_start, display)
+            for index, value in enumerate(groups, 1):
+                if index + 9 >= height - 1:
+                    draw(height - 2, panel_start, "... more groups")
+                    break
+                attr = curses.color_pair(5 + (index - 1) % 4) if curses.has_colors() else 0
+                draw(index + 9, panel_start, f"${index}: {value if value is not None else '(unmatched)'}", attr)
+        try:
+            if field < 3:
+                prefix = len(("Filter regex", "Rename regex", "Replacement")[field]) + 2
+                screen.move(field + 2, min(width - 1, prefix + cursor))
+            else:
+                screen.move(5, min(width - 1, 0 if field == 3 else 12))
+        except curses.error:
+            pass
+        screen.refresh()
+        key = screen.get_wch()
+        if key in ("\x03", "\x1b"):
+            return
+        if key == "\t":
+            field = (field + 1) % 5
+            cursor = len(fields[field]) if field < 3 else 0
+        elif key in (curses.KEY_BTAB,):
+            field = (field - 1) % 5
+            cursor = len(fields[field]) if field < 3 else 0
+        elif field >= 3 and key in (" ", "\n", "\r", curses.KEY_ENTER):
+            if field == 4:
+                key = "\x01"
+            else:
+                options, status = options_menu(screen, {"hidden": hidden, "links": links, "follow": follow, "protect": protect})
+                hidden, links, follow, protect = (options[name] for name in ("hidden", "links", "follow", "protect"))
+                candidates, scan_errors = collect(arguments, hidden, links, follow)
+                scroll = 0
+                continue
+        if key == curses.KEY_LEFT and field < 3:
+            cursor = max(0, cursor - 1)
+        elif key == curses.KEY_RIGHT and field < 3:
+            cursor = min(len(fields[field]), cursor + 1)
+        elif key == curses.KEY_HOME and field < 3:
+            cursor = 0
+        elif key == curses.KEY_END and field < 3:
+            cursor = len(fields[field])
+        elif key in (curses.KEY_BACKSPACE, "\x7f", "\b") and field < 3:
+            if cursor:
+                fields[field] = fields[field][:cursor - 1] + fields[field][cursor:]
+                cursor -= 1
+        elif key == curses.KEY_DC and field < 3:
+            fields[field] = fields[field][:cursor] + fields[field][cursor + 1:]
+        elif key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE):
+            scroll += {curses.KEY_UP: -1, curses.KEY_DOWN: 1, curses.KEY_PPAGE: -max(1, available), curses.KEY_NPAGE: max(1, available)}[key]
+        elif key == "\x01":
+            if messages:
+                status = "Fix errors before applying."
+                continue
+            if not moves:
+                status = "No changes to apply."
+                continue
+            prompt = "Conflicts: [b]ack or [s]kip conflicts?" if bad else f"Rename {len(moves)} files? [y/N]"
+            draw(7, 0, " " * max(0, width - 1))
+            draw(7, 0, prompt, curses.A_BOLD)
+            screen.refresh()
+            answer = screen.get_wch()
+            if (bad and answer not in ("s", "S")) or (not bad and answer not in ("y", "Y")):
+                status = "No changes applied."
+                continue
+            selected = [move for move in moves if move[0] not in bad]
+            # Recheck immediately before staging, including external changes.
+            if conflicts(selected):
+                status = "Files changed since preview; refresh and retry."
+                continue
+            error = apply_moves(selected)
+            status = f"Rename failed: {error}" if error else f"Renamed {len(selected)} files; skipped {len(bad)} conflicts."
+            candidates, scan_errors = collect(arguments, hidden, links, follow)
+        elif field < 3 and isinstance(key, str) and key.isprintable():
+            fields[field] = fields[field][:cursor] + key + fields[field][cursor:]
+            cursor += len(key)
+            status = ""
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("paths", nargs="*", help="directories, files, or glob patterns (default: current directory)")
+    args = parser.parse_args()
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        parser.exit(1, "renamer: an interactive terminal is required\n")
+    try:
+        curses.wrapper(run_ui, args.paths)
+    except KeyboardInterrupt:
+        pass
+    except (curses.error, OSError) as exc:
+        parser.exit(1, f"renamer: {exc}\n")
+
+
+if __name__ == "__main__":
+    main()

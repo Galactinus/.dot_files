@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""List commands published by enabled dotfiles plugins."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import textwrap
+
+
+def discover(root, include_disabled=False):
+    plugins = root / "plugins"
+    disabled_file = root / "generated" / ".disabled_plugins"
+    try:
+        disabled = set(disabled_file.read_text().splitlines())
+    except FileNotFoundError:
+        disabled = set()
+    results = []
+    for plugin in sorted(plugins.iterdir(), key=lambda p: (p.name != "base", p.name)):
+        if not plugin.is_dir() or (plugin.name in disabled and not include_disabled):
+            continue
+        entries = {}
+        if plugin.name == "base":
+            for filename in (plugin / "bash" / "bashrc.symlink", plugin / "bash" / "alias.bash"):
+                if not filename.is_file():
+                    continue
+                for line in filename.read_text().splitlines():
+                    alias = re.match(r"\s*alias\s+([^\s=]+)=(.*)", line)
+                    function = re.match(r"^([a-zA-Z][a-zA-Z0-9_]*)\s*\(\)\s*\{", line)
+                    if alias:
+                        entries[(alias[1], "alias")] = {"name": alias[1], "type": "alias", "description": alias[2]}
+                    elif function:
+                        entries[(function[1], "function")] = {"name": function[1], "type": "function", "description": ""}
+            scripts = plugin / "scripts"
+            if scripts.is_dir():
+                for script in sorted(scripts.iterdir()):
+                    if script.is_file() and os.access(script, os.X_OK):
+                        description = ""
+                        try:
+                            with script.open(errors="replace") as stream:
+                                next(stream, "")
+                                line = next(stream, "").strip()
+                                if line.startswith("#"):
+                                    description = line.lstrip("# ").strip()
+                        except OSError:
+                            pass
+                        entries.setdefault((script.name, "script"), {"name": script.name, "type": "script", "description": description})
+        manifest = plugin / "commands.json"
+        if manifest.exists():
+            try:
+                data = json.loads(manifest.read_text())
+                if not isinstance(data, list) or any(not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"] or any(not isinstance(item.get(key, ""), str) for key in ("type", "description", "usage")) for item in data):
+                    raise ValueError("expected an array of command objects with string fields")
+                for item in data:
+                    matches = [key for key in entries if key[0] == item["name"]]
+                    key = ((item["name"], item["type"]) if "type" in item else
+                           (matches[0] if len(matches) == 1 else (item["name"], "command")))
+                    entries[key] = {**entries.get(key, {}), **item}
+            except (OSError, ValueError) as exc:
+                print(f"dotcommands: {manifest}: {exc}", file=sys.stderr)
+        for entry in sorted(entries.values(), key=lambda e: (e["name"], e.get("type", "command"))):
+            results.append({**entry, "plugin": plugin.name, "type": entry.get("type", "command"), "description": entry.get("description", ""), "plugin_enabled": plugin.name not in disabled})
+    return results
+
+
+def availability(entry, root):
+    if not entry["plugin_enabled"]:
+        return False, "plugin disabled"
+    name, kind = entry["name"], entry["type"]
+    plugin = root / "plugins" / entry["plugin"]
+    hook = plugin / "commands-status"
+    if hook.exists():
+        try:
+            if not hook.is_file() or not os.access(hook, os.X_OK):
+                return False, "availability hook is not executable"
+            result = subprocess.run([str(hook), name, kind], cwd=plugin, text=True,
+                                    capture_output=True, timeout=3, check=False)
+            detail = result.stdout.strip().splitlines()
+            reason = detail[0] if detail else ""
+            if result.returncode == 0:
+                return True, reason
+            if result.returncode == 1:
+                return False, reason or "disabled by plugin"
+            if result.returncode != 3:
+                diagnostic = result.stderr.strip() or reason or f"exit {result.returncode}"
+                print(f"dotcommands: {hook}: {name}: {diagnostic}", file=sys.stderr)
+                return False, "availability hook failed"
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"dotcommands: {hook}: {name}: {exc}", file=sys.stderr)
+            return False, "availability hook failed"
+    if kind in ("function", "alias"):
+        key = "DOTCOMMANDS_BASH_FUNCTIONS" if kind == "function" else "DOTCOMMANDS_BASH_ALIASES"
+        snapshot = os.environ.get(key)
+        if snapshot is None:
+            return False, "shell state unavailable"
+        pattern = r"^declare -f ([^\s]+)$" if kind == "function" else r"^alias ([^=]+)="
+        names = {match.group(1) for line in snapshot.splitlines() if (match := re.match(pattern, line))}
+        return (True, "") if name in names else (False, f"{kind} not defined in current shell")
+    resolved = shutil.which(name)
+    if not resolved:
+        return False, "not executable on PATH"
+    expected = plugin / "scripts" / name
+    if kind == "script" and expected.exists():
+        try:
+            if not os.path.samefile(resolved, expected):
+                return False, "another executable takes precedence on PATH"
+        except OSError:
+            return False, "cannot verify executable"
+    return True, ""
+
+
+def format_entries(entries, width=80, show_usage=True):
+    if not entries:
+        return ""
+    labels = [entry["name"] for entry in entries]
+    label_width = max(len(label) for label in labels)
+    type_width = max(len(entry["type"]) for entry in entries)
+    lines, plugin = [], None
+    for entry, label in zip(entries, labels):
+        if entry["plugin"] != plugin:
+            plugin = entry["plugin"]
+            lines.extend(("", f"{plugin}:"))
+        prefix = f"  {label:<{label_width}}  [{entry['type']:<{type_width}}]  |  "
+        description = entry["description"]
+        if not entry["available"]:
+            description += (" " if description else "") + f"(unavailable: {entry['availability_reason']})"
+        chunks = []
+        for line in description.split("\n"):
+            chunks.extend(textwrap.wrap(line, width=max(10, width - len(prefix)),
+                                        replace_whitespace=False, drop_whitespace=True) or [""])
+        lines.append(prefix + chunks[0])
+        lines.extend(" " * len(prefix) + chunk for chunk in chunks[1:])
+        if show_usage and entry.get("usage"):
+            lines.append(" " * len(prefix) + f"Usage: {entry['usage']}")
+    return "\n".join(lines) + "\n"
+
+
+def print_catalog(output):
+    pager = shutil.which("less") if sys.stdout.isatty() and sys.stdin.isatty() else None
+    if pager and output:
+        try:
+            env = os.environ.copy()
+            env.setdefault("LESS", "-FRX")
+            subprocess.run([pager], input=output, text=True, env=env, check=False)
+            return
+        except OSError:
+            pass
+    sys.stdout.write(output)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="output JSON")
+    parser.add_argument("--usage", dest="show_usage", action="store_true", default=True,
+                        help="show usage details beneath descriptions (default)")
+    parser.add_argument("--no-usage", dest="show_usage", action="store_false",
+                        help="hide usage details")
+    parser.add_argument("-a", "--aliases", action="store_true", help="also include aliases")
+    parser.add_argument("-f", "--no-functions", action="store_true", help="exclude shell functions")
+    parser.add_argument("-s", "--no-scripts", action="store_true", help="exclude scripts")
+    parser.add_argument("-A", "--all", action="store_true", help="include every command category")
+    parser.add_argument("-u", "--include-unavailable", action="store_true", help="also show unavailable commands and disabled plugins")
+    parser.add_argument("-t", "--type", action="append", default=[], metavar="TYPE",
+                        help="also include a manifest type (repeatable)")
+    args = parser.parse_args()
+    root = Path(os.environ.get("DOTFILES_ROOT", Path(__file__).resolve().parents[3]))
+    try:
+        entries = discover(root, include_disabled=args.include_unavailable)
+    except OSError as exc:
+        parser.exit(1, f"dotcommands: {exc}\n")
+    if not args.all:
+        included = {"command", "script", "function", *args.type}
+        if args.aliases:
+            included.add("alias")
+        entries = [entry for entry in entries if entry["type"] in included]
+    excluded = set()
+    if args.no_functions:
+        excluded.add("function")
+    if args.no_scripts:
+        excluded.add("script")
+    entries = [entry for entry in entries if entry["type"] not in excluded]
+    if (not args.include_unavailable and sys.stderr.isatty()
+            and any(entry["type"] in ("function", "alias") for entry in entries)
+            and "DOTCOMMANDS_BASH_FUNCTIONS" not in os.environ):
+        print("dotcommands: current shell functions cannot be inspected; "
+              "in Bash, run 'source ~/.bashrc' to load the dotcommands wrapper", file=sys.stderr)
+    checked = []
+    for entry in entries:
+        available, reason = availability(entry, root)
+        if available or args.include_unavailable:
+            checked.append({**entry, "available": available, "availability_reason": reason})
+    entries = checked
+    if args.json:
+        print(json.dumps(entries, indent=2))
+    else:
+        print_catalog(format_entries(entries, shutil.get_terminal_size((80, 24)).columns, args.show_usage))
+
+
+if __name__ == "__main__":
+    main()

@@ -162,6 +162,13 @@ paths() {
     source "$paths_script" "$@"
 }
 
+# Provide the catalog with aliases and functions from this interactive shell.
+dotcommands() {
+    DOTCOMMANDS_BASH_ALIASES="$(alias -p)" \
+    DOTCOMMANDS_BASH_FUNCTIONS="$(declare -F)" \
+        command dotcommands "$@"
+}
+
 _paths_completion() {
     local cur command state_file active_file entry
     cur="${COMP_WORDS[COMP_CWORD]}"

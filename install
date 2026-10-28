@@ -270,14 +270,14 @@ generate_bash_config () {
   if [ "$config_type" = "bashrc" ]; then
     echo "# Add plugin script directories to PATH" >> "$main_file"
     echo "# Base plugin scripts" >> "$main_file"
-    echo 'if [ -d "$DOTFILES_ROOT/plugins/base/scripts" ]; then' >> "$main_file"
+    echo 'if [ -d "$DOTFILES_ROOT/plugins/base/scripts" ] && ! grep -Fxq -- base "$DOTFILES_ROOT/generated/.disabled_plugins" 2>/dev/null; then' >> "$main_file"
     echo '    PATH="$DOTFILES_ROOT/plugins/base/scripts:$PATH"' >> "$main_file"
     echo "fi" >> "$main_file"
     echo "" >> "$main_file"
     
     echo "# Other plugin scripts" >> "$main_file"
     echo 'for plugin_dir in "$DOTFILES_ROOT/plugins/"*; do' >> "$main_file"
-    echo '    if [ "$plugin_dir" != "$DOTFILES_ROOT/plugins/base" ] && [ -d "$plugin_dir/scripts" ]; then' >> "$main_file"
+    echo '    if [ "$plugin_dir" != "$DOTFILES_ROOT/plugins/base" ] && [ -d "$plugin_dir/scripts" ] && ! grep -Fxq -- "${plugin_dir##*/}" "$DOTFILES_ROOT/generated/.disabled_plugins" 2>/dev/null; then' >> "$main_file"
     echo '        PATH="$plugin_dir/scripts:$PATH"' >> "$main_file"
     echo '    fi' >> "$main_file"
     echo "done" >> "$main_file"

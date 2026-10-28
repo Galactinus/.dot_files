@@ -54,6 +54,85 @@ Each directory is announced in purple before its command runs. In an installed
 interactive shell, `paths` sources its standalone script so `run` uses the
 current bash environment; it restores the original directory afterwards.
 
+#### Command discovery and bulk renaming
+
+`dotcommands` lists callable commands, scripts, and functions from enabled plugins.
+Add `-a` to include aliases; `-f` excludes functions and `-s` excludes scripts.
+`-A` includes all categories, and `-t TYPE` also includes a plugin-defined type
+and can be
+repeated. `dotcommands --json` produces machine-readable output with the same
+category filters. `-u` / `--include-unavailable` also shows unavailable entries
+and disabled plugins, with reasons; combine it with `-A` to include all types.
+Descriptions appear in an aligned column and may include newline characters.
+Usage details appear beneath descriptions when available; use `--no-usage` to
+hide them.
+Interactive text output opens in `less` when available; JSON and redirected
+output are not paged.
+In an installed interactive Bash shell, a wrapper supplies the current aliases
+and functions. A standalone invocation cannot inspect its parent shell, so it
+reports shell entries as unavailable unless a plugin hook supplies their status.
+Base aliases, public
+shell functions and executable scripts are discovered automatically. Plugins
+can publish a `commands.json` array, for example:
+
+```json
+[{"name": "my-tool", "type": "script", "description": "Describe the tool", "usage": "my-tool [option]"}]
+```
+
+Only `name` is required; the other fields are optional strings. Base manifest
+entries add descriptions or override inferred details. Re-run `./install` after
+changing plugin status to regenerate shell configuration.
+
+For custom availability rules, a plugin may provide an executable
+`commands-status` at its root. `dotcommands` calls it once per listed entry,
+with the command name and manifest type as arguments, from the plugin directory.
+Exit 0 means available, exit 1 means unavailable, and exit 3 delegates to the
+standard shell/PATH check. The first stdout line may explain the status. Other
+exit codes, execution errors, and timeouts (3 seconds) report an error and mark
+the entry unavailable. A plugin disabled through `./install` is always marked
+unavailable, and its hook is not run. This hook is executable plugin code and
+inherits the current environment; it should only perform a quick, read-only
+status check.
+
+`renamer [path ...]` requires Python 3.11 or newer and opens an interactive recursive file-renaming preview,
+defaulting to the current directory. Paths may be files, directories or globs
+(quote globs to have the command expand them). The filter is a Python regular
+expression matched against relative paths, and the rename regex matches file
+names. The replacement supports `$1`, `$2`, etc. for capture groups and `$$`
+for a literal dollar sign. An empty replacement leaves filenames unchanged.
+For example, filter `\.(cpp|h)$`, regex
+`_(\w+)(\.[^.]+)$`, and replacement `_translator$2` change the text after
+the final underscore while keeping the extension.
+
+The preview shows filtered files even when their names are unchanged; the
+change count includes only files that would actually be renamed.
+In the regex fields, control characters are blue, escapes are purple, and
+invalid or incomplete constructs are red. The error message gives details.
+The rename regex's matching filename text is highlighted in the file list, and
+capture groups share colors with their corresponding parts of that expression.
+Nested groups take precedence, and group colors repeat after four groups.
+Extension protection also excludes the extension from highlighting.
+Group references in the replacement and their expanded text in the resulting
+filename use the same colors as the corresponding capture groups.
+In the resulting filename, unchanged text is green and changed text is blue;
+capture-group colors take precedence. Literal text in the replacement field
+is blue. The comparison aligns matching text between the old and new names.
+When there is room beside the filenames, the right-hand panel shows capture
+values for the match with the most populated groups. Repeated
+parentheses remain one capture group, holding its last captured value.
+Use Tab or Shift-Tab to select fields, Options, and Apply; press Space or Enter
+to open Options or activate Apply. In Options, use Up/Down to select a setting,
+Space to toggle it, and `q` to return. Arrow or Page Up/Down keys scroll the
+preview; Ctrl-C or Escape quits. The options control hidden entries, symlinks,
+traversal through directory symlinks, and protection of the final extension.
+Hidden entries and symlinks are included by default;
+directory symlinks are not followed unless enabled. Conflicts appear first in
+red; applying offers the choice to go back or skip conflicting entries. If a
+directory symlink and a file reached through it would both be renamed, the
+symlink is treated as a conflict so its descendants remain accessible.
+Toggle choices are saved immediately in `${XDG_STATE_HOME:-~/.local/state}/renamer/options.json`
+and restored next time; the filter, regex, and replacement start empty.
+
 ### Adding Custom Plugins
 To add environment-specific configurations (e.g., work-specific settings):
 

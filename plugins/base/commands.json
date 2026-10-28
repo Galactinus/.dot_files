@@ -1,0 +1,6 @@
+[
+  {"name": "cdr", "type": "function", "description": "Set or return to the project root", "usage": "cdr [set_root [directory]]"},
+  {"name": "paths", "type": "function", "description": "Maintain a list of directories and run commands in them"},
+  {"name": "dotcommands", "type": "script", "description": "List commands supplied by dotfiles and plugins"},
+  {"name": "renamer", "type": "script", "description": "Preview and apply regex-based file renames"}
+]
